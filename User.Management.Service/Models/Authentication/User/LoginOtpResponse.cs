@@ -1,5 +1,5 @@
 ﻿
-using Microsoft.AspNetCore.Identity;
+using User.Management.Data.Models;
 
 namespace User.Management.Service.Models.Authentication.User
 {
@@ -7,6 +7,6 @@ namespace User.Management.Service.Models.Authentication.User
     {
         public string? Token { get; set; }
         public bool IsTwoFactorEnabled { get; set; }
-        public IdentityUser? User { get; set; }
+        public ApplicationUser? User { get; set; }
     }
 }

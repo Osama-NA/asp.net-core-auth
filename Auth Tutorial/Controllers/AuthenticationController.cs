@@ -2,14 +2,12 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.IdentityModel.Tokens;
 using System.ComponentModel.DataAnnotations;
-using System.IdentityModel.Tokens.Jwt;
-using System.Security.Claims;
-using System.Text;
+using User.Management.Data.Models;
 using User.Management.Service.Models;
 using User.Management.Service.Models.Authentication.Login;
 using User.Management.Service.Models.Authentication.SignUp;
+using User.Management.Service.Models.Authentication.User;
 using User.Management.Service.Services;
 
 namespace Auth_Tutorial.Controllers
@@ -18,16 +16,16 @@ namespace Auth_Tutorial.Controllers
     [ApiController]
     public class AuthenticationController : ControllerBase
     {
-        private readonly UserManager<IdentityUser> _userManager;
-        private readonly SignInManager<IdentityUser> _signInManager;
+        private readonly UserManager<ApplicationUser> _userManager;
+        private readonly SignInManager<ApplicationUser> _signInManager;
         private readonly RoleManager<IdentityRole> _roleManager;
         private readonly IConfiguration _configuration;
         private readonly IEmailService _emailService;
         private readonly IUserManagement _user;
 
-        public AuthenticationController(UserManager<IdentityUser> userManager,
+        public AuthenticationController(UserManager<ApplicationUser> userManager,
             RoleManager<IdentityRole> roleManager, IConfiguration configuration,
-            IEmailService emailService, SignInManager<IdentityUser> signInManager, IUserManagement user
+            IEmailService emailService, SignInManager<ApplicationUser> signInManager, IUserManagement user
             )
         {
             _userManager = userManager;
@@ -75,7 +73,7 @@ namespace Auth_Tutorial.Controllers
                 var result = await _userManager.ConfirmEmailAsync(user, token);
                 if (result.Succeeded)
                 {
-                    return StatusCode(StatusCodes.Status200OK, new Response { Status = "Success", Message = "Email Verified Successfully" });
+                    return StatusCode(StatusCodes.Status200OK, new Response { Status = "Success", Message = "Email Verified Successfully", IsSuccess=true });
                 }
             }
             return StatusCode(StatusCodes.Status500InternalServerError, new Response { Status = "Error", Message = "User not found" });
@@ -99,30 +97,13 @@ namespace Auth_Tutorial.Controllers
                         var message = new Message(new string[] { user.Email! }, "OTP code for 2FA", token!);
                         _emailService.SendEmail(message);
 
-                        return StatusCode(StatusCodes.Status200OK, new Response { IsSuccess = response.IsSuccess, Status = "Success", Message = response.Message });
+                        return StatusCode(StatusCodes.Status200OK, new Response { IsSuccess = response.IsSuccess, Status = "Success", Message = $"An OTP code has been sent to your email {user.Email}" });
                     }
 
                     if (await _userManager.CheckPasswordAsync(user, loginModel.Password))
                     {
-                        var authClaims = new List<Claim>
-                        {
-                            new Claim(ClaimTypes.Name, user.UserName),
-                            new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
-                        };
-
-                        var userRoles = await _userManager.GetRolesAsync(user);
-                        foreach (var role in userRoles)
-                        {
-                            authClaims.Add(new Claim(ClaimTypes.Role, role));
-                        }
-
-                        var jwtToken = GetToken(authClaims);
-
-                        return Ok(new
-                        {
-                            token = new JwtSecurityTokenHandler().WriteToken(jwtToken),
-                            expiration = jwtToken.ValidTo
-                        });
+                        var jwtToken = await _user.GetJwtTokenAsync(user);
+                        return Ok(jwtToken);
                     }
                 }
             }
@@ -134,40 +115,26 @@ namespace Auth_Tutorial.Controllers
         [Route("2FA")]
         public async Task<IActionResult> Login2FA(string code, string username)
         {
-            var user = await _userManager.FindByNameAsync(username);
-            var signIn = await _signInManager.TwoFactorSignInAsync("Email", code, false, false);
-
-
-            if (signIn.Succeeded)
+            var jwtToken = await _user.LoginUserWithJwtTokenAsync(code, username);
+            if (jwtToken.IsSuccess)
             {
-                if (user != null)
-                {
-                    // claimlist creation
-                    var authClaims = new List<Claim>
-                    {
-                        new Claim(ClaimTypes.Name, user.UserName),
-                        new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
-                    };
-
-                    // Add role to list
-                    var userRoles = await _userManager.GetRolesAsync(user);
-                    foreach (var role in userRoles)
-                    {
-                        authClaims.Add(new Claim(ClaimTypes.Role, role));
-                    }
-
-                    // Generate token with the claims
-                    var jwtToken = GetToken(authClaims);
-
-                    return Ok(new
-                    {
-                        token = new JwtSecurityTokenHandler().WriteToken(jwtToken),
-                        expiration = jwtToken.ValidTo
-                    });
-                }
+                return Ok(jwtToken);
             }
 
             return StatusCode(StatusCodes.Status404NotFound, new Response { Status = "Error", Message = "Invalid code: two factor authentication failed" });
+        }
+
+        [HttpPost]
+        [Route("RefreshToken")]
+        public async Task<IActionResult> RefreshToken(LoginResponse tokens)
+        {
+            var jwt = await _user.RenewAccessTokenAsync(tokens);
+            if (jwt.IsSuccess)
+            {
+                return Ok(jwt);
+            }
+
+            return StatusCode(jwt.StatusCode, new Response { Status = "Error", Message = jwt.Message });
         }
 
         [HttpPost]
@@ -232,21 +199,6 @@ namespace Auth_Tutorial.Controllers
             }
 
             return StatusCode(StatusCodes.Status404NotFound, new Response { Status = "Error", Message = $"Failed to reset password for the email {resetPassword.Email}" });
-        }
-
-        private JwtSecurityToken GetToken(List<Claim> authClaims) 
-        {
-            var authSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_configuration["JWT:Secret"]!));
-
-            var token = new JwtSecurityToken(
-                issuer: _configuration["JWT:ValidIssuer"],
-                audience: _configuration["JWT:ValidAudience"],
-                expires: DateTime.Now.AddHours(1),
-                claims: authClaims,
-                signingCredentials: new SigningCredentials(authSigningKey, SecurityAlgorithms.HmacSha256)
-            );
-
-            return token;
         }
     }
 }
